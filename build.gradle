@@ -1,0 +1,140 @@
+buildscript {
+    repositories { jcenter() }
+
+    dependencies {
+        classpath "com.github.jruby-gradle:jruby-gradle-jar-plugin:1.1.5"
+    }
+}
+
+apply plugin: 'java'
+apply plugin: 'eclipse'
+apply plugin: 'com.github.jruby-gradle.jar'
+
+import com.github.jrubygradle.JRubyExec
+import org.apache.tools.ant.filters.ReplaceTokens
+
+version = '0.0.1'
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+configurations {
+    provided
+}
+
+sourceSets {
+    main {
+        compileClasspath += configurations.provided
+        java {
+            srcDir "${project.buildDir}/generated-src/java"
+        }
+    }
+}
+
+repositories {
+    jcenter()
+}
+
+eclipse {
+    classpath {
+        plusConfigurations += [configurations.provided]
+    }
+}
+
+dependencies {
+    compile 'org.slf4j:slf4j-api:1.7.13'
+    compile 'org.embulk:embulk-core:0.7.10'
+    compile 'org.embulk:embulk-standards:0.7.10'
+    compile 'com.amazonaws:aws-lambda-java-core:1.1.0'
+    compile 'com.amazonaws:aws-lambda-java-events:1.1.0'
+
+    provided 'org.projectlombok:lombok:1.16.6'
+
+    testCompile 'junit:junit:4.12'
+}
+
+task installGems(type: JRubyExec, dependsOn: ['setupScript']) {
+    script "${project.buildDir}/tmp/gem_install.rb"
+}
+
+task setupScript {
+    doFirst {
+        file("${project.buildDir}/tmp").mkdirs()
+    }
+    ext.gemspecFile = file("${project.buildDir}/tmp/gem_install.rb")
+    outputs.file gemspecFile
+
+    if (project.hasProperty('embulkPlugins')) {
+        ext.embulkPlugins = project.embulkPlugins.split('\\s+')
+    } else {
+        ext.embulkPlugins = []
+    }
+
+    doLast {
+        gemspecFile.write($/
+
+require 'rubygems'
+require 'rubygems/gem_runner'
+require 'rubygems/exceptions'
+
+required_version = Gem::Requirement.new ">= 1.8.7"
+
+unless required_version.satisfied_by? Gem.ruby_version then
+  abort "Expected Ruby Version #{required_version}, is #{Gem.ruby_version}"
+end
+
+args = ARGV.clone
+
+begin
+/$)
+        ext.embulkPlugins.each { plugin->
+            gemspecFile.append($/
+  Gem.install('$plugin')
+/$)
+        }
+
+        gemspecFile.append($/
+rescue Gem::SystemExitException => e
+  exit e.exit_code
+end
+
+/$)
+    }
+}
+
+task buildGemZip(type: Zip, dependsOn: ['installGems']) {
+    into('config') {
+        if (project.hasProperty('embulkConfig')) {
+            from project.embulkConfig
+        }
+    }
+
+    archiveName 'gems.zip'
+    from "${project.buildDir}/tmp/jrubyExec"
+}
+
+task buildZip(type: Zip, dependsOn: ['buildGemZip']) {
+    from compileJava
+    from processResources
+    into('lib') {
+        from configurations.runtime
+    }
+    archiveName 'awslambda.zip'
+}
+
+build.dependsOn buildZip
+
+task generateEnvSetting(type: Copy) {
+    from 'src/main/template'
+    into "${project.buildDir}/generated-src/java"
+    filter(ReplaceTokens, tokens: [
+      useExternalConfig           : project.hasProperty('useExternalConfig')          ? project.useExternalConfig          : 'false'
+     ,overWriteExternalConfig     : project.hasProperty('overWriteExternalConfig')    ? project.overWriteExternalConfig    : 'false'
+     ,gemsS3BucketName            : project.hasProperty('gemsS3BucketName')           ? project.gemsS3BucketName           : 'embulk-awslambda'
+     ,gemsS3Key                   : project.hasProperty('gemsS3Key')                  ? project.gemsS3Key                  : 'gems.zip'
+     ,externalConfigS3BucketName  : project.hasProperty('externalConfigS3BucketName') ? project.externalConfigS3BucketName : 'unused'
+     ,externalConfigS3Key         : project.hasProperty('externalConfigS3Key')        ? project.externalConfigS3Key        : 'unused'
+    ])
+}
+
+compileJava.dependsOn generateEnvSetting
