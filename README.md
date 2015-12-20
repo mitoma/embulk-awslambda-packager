@@ -28,8 +28,8 @@ cd embulk-awslambda-packager
 if build succeeded, script generate two zip files.
 you need to upload to s3.
 
-build/distributions/awslambda.zip -> any place.
-build/distributions/gems.zip -> s3://[gemsS3BucketName]/[gemsS3Key]
+- build/distributions/awslambda.zip -> any place.
+- build/distributions/gems.zip -> s3://[gemsS3BucketName]/[gemsS3Key]
 
 ### setup lambda function.
 
